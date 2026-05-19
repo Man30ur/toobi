@@ -741,15 +741,18 @@ async function typeMessage(node, message, text) {
 
 async function requestAssistantReply(userText) {
   setComposerState(true);
+  const chatPanel = document.querySelector(".chat-panel");
   const thinking = document.createElement("div");
   thinking.className = "thinking-indicator";
   thinking.innerHTML = '<span></span><span></span><span></span>';
   messages.appendChild(thinking);
   messages.scrollTop = messages.scrollHeight;
+  chatPanel.classList.add("thinking");
 
   try {
     const reply = await sendMessageToAI(userText);
     thinking.remove();
+    chatPanel.classList.remove("thinking");
 
     if (stopRequested) {
       setRuntimeStatus("stopped", "پاسخ متوقف شد");
@@ -762,6 +765,7 @@ async function requestAssistantReply(userText) {
     setRuntimeStatus("idle", "آماده");
   } catch (error) {
     thinking.remove();
+    chatPanel.classList.remove("thinking");
 
     if (stopRequested || (error && error.message === "__ABORTED__")) {
       setRuntimeStatus("stopped", "پاسخ متوقف شد");
