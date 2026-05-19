@@ -2,12 +2,12 @@
 <html lang="fa" dir="rtl">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>چت بات هوشمند</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>HORTON</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=20260515-6" />
+    <link rel="stylesheet" href="styles.css?v=20260516-1" />
   </head>
   <body>
     <main class="app-shell">
@@ -20,19 +20,15 @@
               </svg>
             </button>
             <div>
-              <h1>چت بات هوشمند</h1>
-              <div class="inline-status">
-                <span class="status-dot" aria-hidden="true"></span>
-                آماده پاسخ‌گویی
-              </div>
+              <h1>HORTON</h1>
+              <p class="runtime-status" id="runtimeStatus" data-state="idle"></p>
             </div>
           </div>
 
           <div class="header-actions">
-            <button class="icon-button ghost" id="clearChat" type="button" title="پاک کردن گفتگو" aria-label="پاک کردن گفتگو">
+            <button class="icon-button ghost" id="newChatHeader" type="button" title="گفتگوی تازه" aria-label="گفتگوی تازه">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-                <path d="M20 4v5h-5" />
+                <path d="M12 5v14M5 12h14" />
               </svg>
             </button>
           </div>
@@ -43,52 +39,31 @@
             <div class="menu-grabber" aria-hidden="true"></div>
 
             <div class="account-hero">
-              <div class="profile-avatar" aria-hidden="true">
+              <div class="profile-avatar brand-avatar" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
-                  <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
-                  <path d="M4.75 20.25a7.25 7.25 0 0 1 14.5 0" />
+                  <path d="M12 3.75 14.1 9.9 20.25 12l-6.15 2.1L12 20.25 9.9 14.1 3.75 12 9.9 9.9 12 3.75Z" />
                 </svg>
               </div>
               <div>
-                <strong>فضای شخصی شما</strong>
-                <span>برای ذخیره تاریخچه و تنظیمات وارد شوید</span>
+                <strong>HORTON</strong>
+                <span>دستیار سریع، خلوت و همیشه آماده</span>
               </div>
             </div>
 
-            <button class="primary-menu-action" type="button">
-              ورود / ساخت حساب
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m10 7 5 5-5 5" />
-              </svg>
-            </button>
-
-            <div class="menu-list" aria-label="تنظیمات حساب">
-              <button type="button">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3.75 19.25 8v8L12 20.25 4.75 16V8L12 3.75Z" />
-                  <path d="M12 12 19.25 8M12 12 4.75 8M12 12v8.25" />
-                </svg>
-                <span>
-                  <strong>فضای گفتگو</strong>
-                  <small>مدیریت چت‌ها و داده‌ها</small>
-                </span>
-              </button>
-              <button type="button">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12.5 10 17 19 7" />
-                </svg>
-                <span>
-                  <strong>حریم خصوصی</strong>
-                  <small>کنترل امنیت و دسترسی‌ها</small>
-                </span>
-              </button>
+            <div class="history-panel">
+              <input
+                class="history-search"
+                id="historySearch"
+                type="search"
+                inputmode="search"
+                placeholder="جستجو در گفتگوها"
+                autocomplete="off"
+                aria-label="جستجو در تاریخچه گفتگوها"
+              />
+              <div class="history-list" id="historyList" aria-label="تاریخچه چت‌ها"></div>
             </div>
 
-            <div class="theme-box">
-              <div>
-                <strong>تم</strong>
-                <span>روز یا شب</span>
-              </div>
+            <div class="theme-box icon-only">
               <div class="theme-switch" role="group" aria-label="انتخاب تم">
                 <button class="theme-option active" type="button" data-theme="light" aria-pressed="true">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -125,12 +100,13 @@
     <template id="messageTemplate">
       <article class="message">
         <div class="bubble">
-          <p></p>
+          <div class="message-content"></div>
           <time></time>
         </div>
       </article>
     </template>
 
-    <script type="module" src="script.js?v=20260515-6"></script>
+    <div class="toast-host" id="toastHost" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="script.js?v=20260516-1"></script>
   </body>
 </html>

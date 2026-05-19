@@ -5,9 +5,10 @@ const path = require("node:path");
 
 const PORT = Number(process.env.PORT || 8000);
 const API_ENDPOINT =
-  "https://arvancloudai.ir/gateway/models/Kimi-K2.5/hyJZtEau4DyS3vJ22uLV_sxSvt-8V4tAtXBeOgxf9BHmh1nRLH0AxeFpgQf4fZ-sq-HEltGgKCwuLnpQz7O8Y12c2Yu4_EYY29hTWLJX4wPAnOXCWFP4YfwHAbzc4VOPLdV2OQ9TmQS8rvXipjlFa4SlaK_nY_HkXL6L3VSjsajctFk9sYB36p1-zm0jXM88fjFQNjeaQGgQynvPmPrPgvxVjcZD616HD9TtMxHquY7qQ4QnzRcZUw/v1/chat/completions";
-const API_KEY = process.env.ARVAN_API_KEY || "659af3c6-d42b-578f-ad17-8ebccd4b6e50";
-const MODEL = "Kimi-K2-5-vdkki";
+  "https://arvancloudai.ir/gateway/models/Kimi-K2.6/n8bwiEti_FjDVC9TXwfrI312dlj7XT6qWDbwOrcwYrp3UAjQJ__No8zcoQglv8GjbHroWHVMxx0qBaaNYuuVEQIHdGYKi1KmzMgnp_i488IixuYb4Fg9ln-EsJ6klGnVkCVLUMG7689WCDUp8DoDAIvraBOe1VbAwJL9pua-c6pVTPQdjui8X2BapCvLfgVWRAs63ThPHZ1szqCSez4lNLhFpm0KiiUyw1fa5OuxwikeB-qOysa3lg/v1/chat/completions";
+const API_KEY = process.env.ARVAN_API_KEY;
+const MODEL = process.env.ARVAN_MODEL || "Kimi-K2.6";
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 45000);
 const publicFiles = new Set(["/index.html", "/styles.css", "/script.js"]);
 
 const mimeTypes = {
@@ -18,10 +19,34 @@ const mimeTypes = {
   ".svg": "image/svg+xml",
 };
 
-const BUILD_ID = String(Date.now());
+const assetFiles = ["styles.css", "script.js"];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://127.0.0.1:8000,http://localhost:8000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-function setCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function resolveAllowedOrigin(req) {
+  const origin = req.headers.origin;
+
+  if (!origin) {
+    return null;
+  }
+
+  if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return "";
+}
+
+function setCorsHeaders(req, res) {
+  const allowedOrigin = resolveAllowedOrigin(req);
+  res.setHeader("Vary", "Origin");
+
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -34,8 +59,22 @@ function getCacheHeader(filePath) {
   return "public, max-age=31536000, immutable";
 }
 
+function getFileTag(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return `${Math.floor(stats.mtimeMs)}-${stats.size}`;
+  } catch {
+    return String(Date.now());
+  }
+}
+
+function getAssetsVersion() {
+  return assetFiles
+    .map((fileName) => getFileTag(path.join(__dirname, fileName)))
+    .join("_");
+}
+
 function sendJson(res, statusCode, data) {
-  setCorsHeaders(res);
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
 }
@@ -82,6 +121,9 @@ function postJson(url, payload, headers) {
     );
 
     request.on("error", reject);
+    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+      request.destroy(new Error("Upstream request timeout"));
+    });
     request.write(body);
     request.end();
   });
@@ -89,6 +131,11 @@ function postJson(url, payload, headers) {
 
 async function handleChat(req, res) {
   try {
+    if (!API_KEY) {
+      sendJson(res, 500, { error: "ARVAN_API_KEY روی سرور تنظیم نشده است." });
+      return;
+    }
+
     const body = await readJsonBody(req);
 
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
@@ -137,6 +184,11 @@ async function handleChat(req, res) {
 
     sendJson(res, 200, { reply: assistantText });
   } catch (error) {
+    if (error && error.message === "Upstream request timeout") {
+      sendJson(res, 504, { error: "پاسخ سرویس هوش مصنوعی به زمان مجاز نرسید." });
+      return;
+    }
+
     sendJson(res, 500, { error: error.message || "خطای داخلی سرور رخ داد." });
   }
 }
@@ -166,30 +218,44 @@ function serveFile(req, res) {
     }
 
     const type = mimeTypes[path.extname(filePath)] || "application/octet-stream";
+    const etagValue = getFileTag(filePath);
     const responseBody =
       requestedPath === "/index.html"
-        ? content.replace(/((?:href|src)="[^"]+\?v=)[^"]+(")/g, `$1${BUILD_ID}$2`)
+        ? content.replace(/((?:href|src)="[^"]+\?v=)[^"]+(")/g, `$1${getAssetsVersion()}$2`)
         : content;
 
     res.writeHead(200, {
       "Content-Type": type,
       "Cache-Control": getCacheHeader(filePath),
-      ETag: `"${BUILD_ID}-${path.basename(filePath)}"`,
+      ETag: `"${etagValue}-${path.basename(filePath)}"`,
     });
     res.end(req.method === "HEAD" ? undefined : responseBody);
   });
 }
 
 const server = http.createServer((req, res) => {
-  setCorsHeaders(res);
+  setCorsHeaders(req, res);
+  const allowedOrigin = resolveAllowedOrigin(req);
 
   if (req.method === "OPTIONS") {
+    if (req.url === "/api/chat" && req.headers.origin && !allowedOrigin) {
+      res.writeHead(403);
+      res.end("Origin not allowed");
+      return;
+    }
+
     res.writeHead(204);
     res.end();
     return;
   }
 
   if (req.url === "/api/chat" && req.method === "POST") {
+    if (req.headers.origin && !allowedOrigin) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "Origin not allowed" }));
+      return;
+    }
+
     handleChat(req, res);
     return;
   }
@@ -205,5 +271,4 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server running on http://127.0.0.1:${PORT}`);
-  console.log(`Build ID: ${BUILD_ID}`);
 });
