@@ -587,13 +587,14 @@ async function sendMessageToAI(userText) {
   }
 
   try {
+    const requestController = new AbortController();
+    currentRequestController = requestController;
     const session = getCurrentSession();
     const apiMessages = toApiMessages(session);
     const apiUrls = getChatApiUrls();
-    const requestController = new AbortController();
-    currentRequestController = requestController;
     let response;
-    setRuntimeStatus("sending", "در حال فکر کردن");
+
+    setRuntimeStatus("sending", "در حال ارسال");
 
     for (const apiUrl of apiUrls) {
       try {
@@ -611,37 +612,34 @@ async function sendMessageToAI(userText) {
     }
 
     if (!response || [404, 405].includes(response.status)) {
-      throw new Error("بک‌اند چت پیدا نشد. server.js باید روی همین هاست اجرا شود یا در حالت محلی روی پورت 8000 روشن باشد.");
-    }
-
-    if (response.status === 401) {
-      throw new Error("کلید API نامعتبر است یا دسترسی ندارد.");
-    }
-
-    if (response.status === 429) {
-      throw new Error("تعداد درخواست‌ها زیاد شده است. کمی بعد دوباره تلاش کن.");
+      throw new Error("بک‌اند چت پیدا نشد. server.js باید در کنار فرانت اجرا شود.");
     }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
-      throw new Error(errorData?.error || `خطای سرور با کد ${response.status}`);
+      throw new Error(errorData?.error || `خطای n8n با کد ${response.status}`);
     }
 
     const data = await response.json();
-    const assistantText = data?.reply;
+
+    if (data?.error) {
+      throw new Error(data.error);
+    }
+
+    const assistantText = data?.reply ?? data?.message;
 
     if (!assistantText) {
-      throw new Error("پاسخ خالی از سمت هوش مصنوعی دریافت شد.");
+      throw new Error("پاسخ خالی از سمت Arvan AI دریافت شد.");
     }
 
     return assistantText;
   } catch (error) {
-    if (error && error.message === "__ABORTED__") {
-      throw error;
+    if (error && error.name === "AbortError") {
+      throw new Error("__ABORTED__");
     }
 
     if (error instanceof TypeError) {
-      throw new Error("اتصال به بک‌اند برقرار نشد. server.js در دسترس مرورگر نیست.");
+      throw new Error("اتصال به سرور چت برقرار نشد. لطفاً وضعیت server.js و n8n را بررسی کن.");
     }
 
     throw error;

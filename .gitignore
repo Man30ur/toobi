@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+.env
+.env*.local
+!.env.example
+.continue/
+app/
+src/
+prisma/
+next-env.d.ts
+next.config.*
+tsconfig.json

@@ -2,13 +2,25 @@ const http = require("node:http");
 const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
+const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 8000);
-const API_ENDPOINT =
-  "https://arvancloudai.ir/gateway/models/Kimi-K2.6/n8bwiEti_FjDVC9TXwfrI312dlj7XT6qWDbwOrcwYrp3UAjQJ__No8zcoQglv8GjbHroWHVMxx0qBaaNYuuVEQIHdGYKi1KmzMgnp_i488IixuYb4Fg9ln-EsJ6klGnVkCVLUMG7689WCDUp8DoDAIvraBOe1VbAwJL9pua-c6pVTPQdjui8X2BapCvLfgVWRAs63ThPHZ1szqCSez4lNLhFpm0KiiUyw1fa5OuxwikeB-qOysa3lg/v1/chat/completions";
-const API_KEY = process.env.ARVAN_API_KEY;
-const MODEL = process.env.ARVAN_MODEL || "Kimi-K2.6";
-const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 45000);
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "http://127.0.0.1:5678/webhook/toobi";
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 90000);
+const POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
+const POSTGRES_PORT = Number(process.env.POSTGRES_PORT || 5432);
+const POSTGRES_DB = process.env.POSTGRES_DB || "appdb";
+const POSTGRES_USER = process.env.POSTGRES_USER || "appuser";
+const POSTGRES_PASSWORD = process.env.POSTGRES_PASSWORD || "yu9YmZH8nWrww0fVWMyi9s7o";
+const pool = new Pool({
+  host: POSTGRES_HOST,
+  port: POSTGRES_PORT,
+  database: POSTGRES_DB,
+  user: POSTGRES_USER,
+  password: POSTGRES_PASSWORD,
+  ssl: false,
+  max: 5,
+});
 const publicFiles = new Set(["/index.html", "/styles.css", "/script.js"]);
 
 const mimeTypes = {
@@ -30,6 +42,17 @@ function resolveAllowedOrigin(req) {
 
   if (!origin) {
     return null;
+  }
+
+  try {
+    const originUrl = new URL(origin);
+    const requestHost = req.headers.host;
+
+    if (requestHost && originUrl.host === requestHost) {
+      return origin;
+    }
+  } catch {
+    return "";
   }
 
   if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
@@ -79,6 +102,30 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
+async function ensureChatTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id BIGSERIAL PRIMARY KEY,
+      message_id TEXT UNIQUE NOT NULL,
+      conversation_id TEXT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+async function saveChatMessage({ messageId, conversationId, role, content, createdAt }) {
+  await pool.query(
+    `
+      INSERT INTO chat_messages (message_id, conversation_id, role, content, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (message_id) DO NOTHING
+    `,
+    [messageId, conversationId, role, content, createdAt]
+  );
+}
+
 async function readJsonBody(req) {
   const chunks = [];
 
@@ -92,10 +139,12 @@ async function readJsonBody(req) {
 function postJson(url, payload, headers) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
+    const transport = parsedUrl.protocol === "http:" ? http : https;
     const body = JSON.stringify(payload);
-    const request = https.request(
+    const request = transport.request(
       {
         hostname: parsedUrl.hostname,
+        port: parsedUrl.port || undefined,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
         method: "POST",
         headers: {
@@ -131,61 +180,64 @@ function postJson(url, payload, headers) {
 
 async function handleChat(req, res) {
   try {
-    if (!API_KEY) {
-      sendJson(res, 500, { error: "ARVAN_API_KEY روی سرور تنظیم نشده است." });
-      return;
-    }
-
     const body = await readJsonBody(req);
+    const lastUserMessage = Array.isArray(body.messages)
+      ? [...body.messages].reverse().find((message) => message?.role === "user")?.content
+      : body.message;
+    const message = String(lastUserMessage || "").trim();
+    const conversationId = String(body.conversationId || body.sessionId || body.chatId || "").trim() || null;
+    const messageId = String(body.messageId || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const createdAt = new Date().toISOString();
 
-    if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    if (!message) {
       sendJson(res, 400, { error: "پیامی برای ارسال وجود ندارد." });
       return;
     }
 
-    const apiResponse = await postJson(
-      API_ENDPOINT,
-      {
-        model: MODEL,
-        messages: body.messages,
-        max_tokens: 3000,
-        temperature: 0.7,
-      },
-      {
-        Authorization: `apikey ${API_KEY}`,
-        "Content-Type": "application/json",
-      }
-    );
+    await ensureChatTable();
+    await saveChatMessage({
+      messageId,
+      conversationId,
+      role: "user",
+      content: message,
+      createdAt,
+    });
+
+    const apiResponse = await postJson(N8N_WEBHOOK_URL, { message }, { "Content-Type": "application/json" });
 
     const responseText = apiResponse.text;
 
-    if (apiResponse.status === 401) {
-      sendJson(res, 401, { error: "کلید API نامعتبر است یا دسترسی ندارد." });
-      return;
-    }
-
-    if (apiResponse.status === 429) {
-      sendJson(res, 429, { error: "تعداد درخواست‌ها زیاد شده است. کمی بعد دوباره تلاش کن." });
-      return;
-    }
-
     if (!apiResponse.ok) {
-      sendJson(res, apiResponse.status, { error: responseText || `خطای سرور با کد ${apiResponse.status}` });
+      sendJson(res, apiResponse.status, { error: responseText || `خطای n8n با کد ${apiResponse.status}` });
       return;
     }
 
     const data = JSON.parse(responseText);
-    const assistantText = data?.choices?.[0]?.message?.content;
+    const assistantText = data?.reply ?? data?.message;
 
-    if (!assistantText) {
-      sendJson(res, 502, { error: "پاسخ خالی از سمت هوش مصنوعی دریافت شد." });
+    if (data?.error) {
+      sendJson(res, 502, { error: data.error });
       return;
     }
 
-    sendJson(res, 200, { reply: assistantText });
+    if (!assistantText) {
+      sendJson(res, 502, { error: "پاسخ خالی از سمت n8n دریافت شد." });
+      return;
+    }
+
+    const assistantMessageId = `${messageId}-assistant`;
+    await saveChatMessage({
+      messageId: assistantMessageId,
+      conversationId,
+      role: "assistant",
+      content: assistantText,
+      createdAt: new Date().toISOString(),
+    });
+
+    sendJson(res, 200, { reply: assistantText, raw: data.raw || data });
   } catch (error) {
     if (error && error.message === "Upstream request timeout") {
-      sendJson(res, 504, { error: "پاسخ سرویس هوش مصنوعی به زمان مجاز نرسید." });
+      sendJson(res, 504, { error: "پاسخ n8n به زمان مجاز نرسید." });
       return;
     }
 
