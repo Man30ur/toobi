@@ -359,6 +359,62 @@ function updateAccountUi() {
   if (profileAvatar) profileAvatar.value = currentUser.avatarUrl || "";
 }
 
+function mergeSessions(localSessions, remoteSessions) {
+  const merged = new Map();
+
+  localSessions.forEach((session) => {
+    merged.set(session.id, session);
+  });
+
+  remoteSessions.forEach((session) => {
+    const existing = merged.get(session.id);
+    if (!existing) {
+      merged.set(session.id, session);
+      return;
+    }
+
+    const messageMap = new Map(existing.messages.map((message) => [message.id, message]));
+    session.messages.forEach((message) => {
+      if (!messageMap.has(message.id)) {
+        existing.messages.push(message);
+      }
+    });
+
+    existing.title = existing.title === "گفتگوی تازه" ? session.title : existing.title;
+    existing.updatedAt = Math.max(existing.updatedAt || 0, session.updatedAt || 0);
+    existing.createdAt = Math.min(existing.createdAt || Date.now(), session.createdAt || Date.now());
+    existing.pinned = Boolean(existing.pinned || session.pinned);
+    existing.messages.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    merged.set(session.id, existing);
+  });
+
+  return Array.from(merged.values())
+    .slice(0, 50)
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+}
+
+async function loadRemoteChats() {
+  if (!currentUser) {
+    return;
+  }
+
+  try {
+    const data = await apiJson("/api/chats");
+    const remoteSessions = normalizeSessions(Array.isArray(data.chats) ? data.chats : []);
+    sessions = mergeSessions(sessions, remoteSessions);
+
+    if (!sessions.some((session) => session.id === currentSessionId) && sessions[0]) {
+      currentSessionId = sessions[0].id;
+    }
+
+    saveSessions();
+    renderMessages();
+    renderHistory();
+  } catch (error) {
+    console.warn("loadRemoteChats failed", error);
+  }
+}
+
 async function loadCurrentUser() {
   try {
     const data = await apiJson("/api/auth/me");
@@ -367,6 +423,7 @@ async function loadCurrentUser() {
     currentUser = null;
   }
   updateAccountUi();
+  await loadRemoteChats();
 }
 
 async function requestOtp() {
@@ -405,6 +462,7 @@ async function verifyOtp() {
   currentUser = data.user || null;
   updateAccountUi();
   closeAuthDialog();
+  await loadRemoteChats();
   showToast("ورود با موفقیت انجام شد.", "success");
 }
 
@@ -1120,7 +1178,15 @@ function resizeInput() {
   input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
 }
 
+function isComposerFocused() {
+  return document.activeElement === input;
+}
+
 function resetViewportAfterKeyboard() {
+  if (!isComposerFocused()) {
+    return;
+  }
+
   window.requestAnimationFrame(() => {
     window.scrollTo(0, 0);
     document.documentElement.scrollTop = 0;
@@ -1134,9 +1200,8 @@ function syncKeyboardInset() {
     return;
   }
 
-  const isInputFocused = document.activeElement === input;
   const rawInset = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-  const keyboardInset = isInputFocused ? Math.max(0, rawInset) : 0;
+  const keyboardInset = isComposerFocused() ? Math.max(0, rawInset) : 0;
   document.documentElement.style.setProperty("--kb-offset", `${Math.round(keyboardInset)}px`);
 }
 
@@ -1311,7 +1376,7 @@ menuBackdrop.addEventListener("click", () => {
 document.addEventListener(
   "touchmove",
   (event) => {
-    const allowedScrollArea = event.target.closest(".messages, .history-list, #messageInput");
+    const allowedScrollArea = event.target.closest(".messages, .history-list, .side-menu, .menu-card, .profile-form, .auth-dialog, .auth-card, #messageInput");
     if (!allowedScrollArea) {
       event.preventDefault();
     }
@@ -1360,16 +1425,14 @@ themeOptions.forEach((button) => {
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", () => {
     syncKeyboardInset();
-    const active = document.activeElement;
-    const keyboardClosed = active !== input;
-    if (keyboardClosed) {
+    if (!isComposerFocused()) {
       resetViewportAfterKeyboard();
     }
   });
 
   window.visualViewport.addEventListener("scroll", () => {
     syncKeyboardInset();
-    if (document.activeElement !== input && window.visualViewport.offsetTop > 0) {
+    if (!isComposerFocused() && window.visualViewport.offsetTop > 0) {
       resetViewportAfterKeyboard();
     }
   });

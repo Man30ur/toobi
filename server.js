@@ -239,6 +239,19 @@ async function ensureAuthTables() {
 }
 async function ensureChatTable() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      title TEXT NOT NULL DEFAULT 'گفتگوی تازه',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_message_at TIMESTAMPTZ
+    );
+  `);
+
+  await pool.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS user_id TEXT;`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS chat_messages (
       id BIGSERIAL PRIMARY KEY,
       message_id TEXT UNIQUE NOT NULL,
@@ -251,6 +264,8 @@ async function ensureChatTable() {
   `);
 
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS chat_sessions_user_updated_idx ON chat_sessions (user_id, updated_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages (conversation_id, created_at ASC);`);
 }
 
 async function saveChatMessage({ messageId, conversationId, userId, role, content, createdAt }) {
@@ -262,6 +277,68 @@ async function saveChatMessage({ messageId, conversationId, userId, role, conten
     `,
     [messageId, conversationId, userId, role, content, createdAt]
   );
+}
+
+async function upsertChatSession({ chatId, userId, title, messageAt }) {
+  await pool.query(
+    `
+      INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at, last_message_at)
+      VALUES ($1, $2, $3, $4, $4, $4)
+      ON CONFLICT (id) DO UPDATE SET
+        user_id = COALESCE(EXCLUDED.user_id, chat_sessions.user_id),
+        title = CASE
+          WHEN chat_sessions.title = 'گفتگوی تازه' AND EXCLUDED.title <> '' THEN EXCLUDED.title
+          ELSE chat_sessions.title
+        END,
+        updated_at = EXCLUDED.updated_at,
+        last_message_at = EXCLUDED.last_message_at
+    `,
+    [chatId, userId, title || 'گفتگوی تازه', messageAt]
+  );
+}
+
+async function listChatSessions(userId) {
+  const result = await pool.query(
+    `
+      SELECT
+        s.id,
+        s.title,
+        s.created_at,
+        s.updated_at,
+        s.last_message_at,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', m.message_id,
+              'role', CASE WHEN m.role = 'assistant' THEN 'bot' ELSE m.role END,
+              'kind', 'normal',
+              'content', m.content,
+              'time', to_char(m.created_at, 'HH24:MI'),
+              'createdAt', EXTRACT(EPOCH FROM m.created_at) * 1000,
+              'pending', false
+            )
+            ORDER BY m.created_at ASC
+          ) FILTER (WHERE m.message_id IS NOT NULL),
+          '[]'::json
+        ) AS messages
+      FROM chat_sessions s
+      LEFT JOIN chat_messages m ON m.conversation_id = s.id
+      WHERE s.user_id = $1
+      GROUP BY s.id
+      ORDER BY COALESCE(s.last_message_at, s.updated_at) DESC
+    `,
+    [userId]
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastMessageAt: row.last_message_at,
+    pinned: false,
+    messages: Array.isArray(row.messages) ? row.messages : [],
+  }));
 }
 
 async function readJsonBody(req) {
@@ -593,9 +670,16 @@ async function handleChat(req, res) {
     }
 
     await ensureChatTable();
+    const chatId = conversationId || messageId;
+    await upsertChatSession({
+      chatId,
+      userId: user?.id || null,
+      title: message.slice(0, 48),
+      messageAt: createdAt,
+    });
     await saveChatMessage({
       messageId,
-      conversationId,
+      conversationId: chatId,
       userId: user?.id || null,
       role: "user",
       content: message,
@@ -632,13 +716,20 @@ async function handleChat(req, res) {
     }
 
     const assistantMessageId = `${messageId}-assistant`;
+    const assistantCreatedAt = new Date().toISOString();
+    await upsertChatSession({
+      chatId: conversationId || messageId,
+      userId: user?.id || null,
+      title: message.slice(0, 48),
+      messageAt: assistantCreatedAt,
+    });
     await saveChatMessage({
       messageId: assistantMessageId,
-      conversationId,
+      conversationId: conversationId || messageId,
       userId: user?.id || null,
       role: "assistant",
       content: assistantText,
-      createdAt: new Date().toISOString(),
+      createdAt: assistantCreatedAt,
     });
 
     sendJson(res, 200, { reply: assistantText, raw: data.raw || data });
@@ -649,6 +740,23 @@ async function handleChat(req, res) {
     }
 
     sendJson(res, 500, { error: error.message || "خطای داخلی سرور رخ داد." });
+  }
+}
+
+async function handleChats(req, res) {
+  try {
+    const user = await getCurrentUser(req);
+
+    if (!user) {
+      sendJson(res, 401, { error: "برای مشاهده تاریخچه باید وارد شوید." });
+      return;
+    }
+
+    await ensureChatTable();
+    const chats = await listChatSessions(user.id);
+    sendJson(res, 200, { chats });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "دریافت تاریخچه انجام نشد." });
   }
 }
 
@@ -702,6 +810,7 @@ const routes = {
   "GET /api/auth/me": handleMe,
   "POST /api/auth/profile": handleProfile,
   "POST /api/auth/logout": handleLogout,
+  "GET /api/chats": handleChats,
   "POST /api/chat": handleChat,
 };
 

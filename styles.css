@@ -1313,3 +1313,36 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+.side-menu {
+  max-height: calc(100dvh - 96px);
+}
+
+.menu-card {
+  max-height: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.account-panel,
+.history-panel,
+.theme-box {
+  touch-action: pan-y;
+}
+
+@media (max-width: 640px) {
+  .side-menu {
+    max-height: min(100dvh - 20px, 780px);
+  }
+
+  .menu-card {
+    display: grid;
+    gap: 10px;
+    max-height: calc(100dvh - 40px);
+  }
+
+  .history-list {
+    max-height: min(32dvh, 260px);
+  }
+}
