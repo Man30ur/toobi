@@ -12,6 +12,24 @@ const historyList = document.querySelector("#historyList");
 const historySearch = document.querySelector("#historySearch");
 const runtimeStatus = document.querySelector("#runtimeStatus");
 const toastHost = document.querySelector("#toastHost");
+const authDialog = document.querySelector("#authDialog");
+const authForm = document.querySelector("#authForm");
+const authOpenButton = document.querySelector("#authOpenButton");
+const authClose = document.querySelector("#authClose");
+const authPhone = document.querySelector("#authPhone");
+const authCode = document.querySelector("#authCode");
+const authName = document.querySelector("#authName");
+const authSubmit = document.querySelector("#authSubmit");
+const authHint = document.querySelector("#authHint");
+const otpStep = document.querySelector("#otpStep");
+const nameStep = document.querySelector("#nameStep");
+const demoCode = document.querySelector("#demoCode");
+const accountTitle = document.querySelector("#accountTitle");
+const accountSummary = document.querySelector("#accountSummary");
+const profileForm = document.querySelector("#profileForm");
+const profileName = document.querySelector("#profileName");
+const profileAvatar = document.querySelector("#profileAvatar");
+const logoutButton = document.querySelector("#logoutButton");
 
 const STORAGE_KEY = "horton-chat-sessions";
 
@@ -19,6 +37,9 @@ let isSending = false;
 let stopRequested = false;
 let currentRequestController = null;
 let longPressTimer = null;
+let currentUser = null;
+let authStep = "phone";
+let pendingPhone = "";
 let sessions = loadSessions();
 let currentSessionId = sessions[0]?.id || createSession().id;
 
@@ -122,14 +143,18 @@ function getChatApiUrls() {
 }
 
 async function postChatMessage(apiUrl, apiMessages, signal) {
+  const session = getCurrentSession();
   return fetch(apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: "include",
     signal,
     body: JSON.stringify({
       messages: apiMessages,
+      conversationId: session.id,
+      messageId: createId(),
     }),
   });
 }
@@ -242,6 +267,175 @@ function setRuntimeStatus(state, text) {
   runtimeStatus.dataset.state = state;
   runtimeStatus.textContent = state === "idle" ? "" : text;
 }
+
+function getApiBaseUrl() {
+  const localProxyUrl = "http://127.0.0.1:8000";
+  const isLocalHost = ["localhost", "127.0.0.1", "0.0.0.0", ""].includes(window.location.hostname);
+  const isLanHost =
+    /^(10|127)\./.test(window.location.hostname) ||
+    /^192\.168\./.test(window.location.hostname) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(window.location.hostname);
+  const isStaticLocalPreview =
+    (isLocalHost || isLanHost) && window.location.port && window.location.port !== "8000";
+
+  if (window.location.protocol === "file:" || isStaticLocalPreview) {
+    return localProxyUrl;
+  }
+
+  return "";
+}
+
+async function apiJson(path, options = {}) {
+  const response = await fetch(getApiBaseUrl() + path, {
+    ...options,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || "درخواست انجام نشد.");
+  }
+
+  return data;
+}
+
+function resetAuthDialog() {
+  authStep = "phone";
+  pendingPhone = "";
+  if (authPhone) authPhone.disabled = false;
+  if (authCode) authCode.value = "";
+  if (authName) authName.value = "";
+  if (otpStep) otpStep.hidden = true;
+  if (nameStep) nameStep.hidden = true;
+  if (demoCode) {
+    demoCode.hidden = true;
+    demoCode.textContent = "";
+  }
+  if (authSubmit) authSubmit.textContent = "دریافت کد";
+  if (authHint) authHint.textContent = "شماره موبایل را وارد کن تا کد تایید تستی ساخته شود.";
+}
+
+function openAuthDialog() {
+  resetAuthDialog();
+  if (authDialog?.showModal) {
+    authDialog.showModal();
+  } else {
+    authDialog?.setAttribute("open", "");
+  }
+  window.setTimeout(() => authPhone?.focus(), 80);
+}
+
+function closeAuthDialog() {
+  if (authDialog?.close) {
+    authDialog.close();
+  } else {
+    authDialog?.removeAttribute("open");
+  }
+}
+
+function updateAccountUi() {
+  if (!accountTitle || !accountSummary || !authOpenButton || !profileForm) {
+    return;
+  }
+
+  if (!currentUser) {
+    accountTitle.textContent = "HORTON";
+    accountSummary.textContent = "برای ذخیره گفتگوها وارد حساب شو";
+    authOpenButton.hidden = false;
+    profileForm.hidden = true;
+    return;
+  }
+
+  const name = currentUser.displayName || "کاربر HORTON";
+  accountTitle.textContent = name;
+  accountSummary.textContent = currentUser.phone || "شماره تایید شده";
+  authOpenButton.hidden = true;
+  profileForm.hidden = false;
+  if (profileName) profileName.value = currentUser.displayName || "";
+  if (profileAvatar) profileAvatar.value = currentUser.avatarUrl || "";
+}
+
+async function loadCurrentUser() {
+  try {
+    const data = await apiJson("/api/auth/me");
+    currentUser = data.user || null;
+  } catch {
+    currentUser = null;
+  }
+  updateAccountUi();
+}
+
+async function requestOtp() {
+  const phone = authPhone.value.trim();
+  const data = await apiJson("/api/auth/request-otp", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
+
+  pendingPhone = phone;
+  authStep = "otp";
+  authPhone.disabled = true;
+  otpStep.hidden = false;
+  nameStep.hidden = false;
+  authSubmit.textContent = "تایید و ورود";
+  authHint.textContent = "کد تایید را وارد کن. فعلاً پیامک واقعی فعال نیست.";
+
+  if (data.demoCode && demoCode) {
+    demoCode.hidden = false;
+    demoCode.textContent = "کد تست: " + data.demoCode;
+  }
+
+  authCode.focus();
+}
+
+async function verifyOtp() {
+  const data = await apiJson("/api/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({
+      phone: pendingPhone || authPhone.value.trim(),
+      code: authCode.value.trim(),
+      displayName: authName.value.trim(),
+    }),
+  });
+
+  currentUser = data.user || null;
+  updateAccountUi();
+  closeAuthDialog();
+  showToast("ورود با موفقیت انجام شد.", "success");
+}
+
+async function saveProfile(event) {
+  event.preventDefault();
+  try {
+    const data = await apiJson("/api/auth/profile", {
+      method: "POST",
+      body: JSON.stringify({
+        displayName: profileName.value.trim(),
+        avatarUrl: profileAvatar.value.trim(),
+      }),
+    });
+    currentUser = data.user || null;
+    updateAccountUi();
+    showToast("پروفایل ذخیره شد.", "success");
+  } catch (error) {
+    showToast(error.message || "پروفایل ذخیره نشد.", "error");
+  }
+}
+
+async function logout() {
+  try {
+    await apiJson("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
+  } finally {
+    currentUser = null;
+    updateAccountUi();
+    showToast("از حساب خارج شدی.", "success");
+  }
+}
+
 
 function escapeHtml(text) {
   return text
@@ -1082,6 +1276,28 @@ if (historySearch) {
 
 newChatHeaderButton.addEventListener("click", openNewChat);
 
+authOpenButton?.addEventListener("click", openAuthDialog);
+authClose?.addEventListener("click", closeAuthDialog);
+profileForm?.addEventListener("submit", saveProfile);
+logoutButton?.addEventListener("click", logout);
+
+authForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  authSubmit.disabled = true;
+
+  try {
+    if (authStep === "phone") {
+      await requestOtp();
+    } else {
+      await verifyOtp();
+    }
+  } catch (error) {
+    showToast(error.message || "ورود انجام نشد.", "error");
+  } finally {
+    authSubmit.disabled = false;
+  }
+});
+
 menuToggle.addEventListener("click", () => {
   setMenu(!sideMenu.classList.contains("open"));
 });
@@ -1172,3 +1388,4 @@ syncKeyboardInset();
 setRuntimeStatus("idle", "");
 renderMessages();
 renderHistory();
+loadCurrentUser();
